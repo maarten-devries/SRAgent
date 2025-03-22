@@ -59,7 +59,7 @@ def create_publications_agent(
     configure_logging()
     
     # create model
-    model_supervisor = ChatOpenAI(model=model_name, temperature=0.1)
+    model_supervisor = ChatOpenAI(model=model_name, temperature=0)
 
     # set tools
     tools = [
@@ -164,6 +164,12 @@ def create_publications_agent(
         Invoke the Publications agent with a message.
         The Publications agent will find publications associated with study accessions.
         """
+        # Ensure config is a dictionary and set temperature
+        if config is None:
+            config = {}
+        config = dict(config)  # Make a copy to avoid modifying the original
+        config["temperature"] = 0
+        
         # Invoke the agent with the message
         result = await agent.ainvoke(
             {"messages" : [AIMessage(content=message)]}, 
@@ -271,6 +277,12 @@ async def create_publications_agent_stream(input, config: dict={}, summarize_ste
     # create step summary chain
     step_summary_chain = create_step_summary_chain() if summarize_steps else None
     
+    # Ensure config is a dictionary and set temperature
+    if config is None:
+        config = {}
+    config = dict(config)  # Make a copy to avoid modifying the original
+    config["temperature"] = 0
+    
     # invoke agent
     if summarize_steps and step_summary_chain:
         # If we want step summaries, we need to handle it differently
@@ -349,30 +361,11 @@ async def create_publications_agent_stream(input, config: dict={}, summarize_ste
     
     # Extract preprint DOI
     preprint_doi = None
-    doi_match = re.search(r'DOI:?\s*(10\.\d+/[^\s\"\']+)', response_text, re.IGNORECASE)
+    doi_match = re.search(r'10\.\d+/[^\s"]+', response_text)
     if doi_match:
-        preprint_doi = doi_match.group(1)
+        preprint_doi = doi_match.group(0)
     
-    # If PMCID is found but PMID is not, directly convert PMCID to PMID
-    if pmcid and not pmid:
-        try:
-            logging.info(f"Attempting to get PMID from PMCID: {pmcid}")
-            
-            # Use the existing pmid_from_pmcid function
-            from SRAgent.tools.pmid import pmid_from_pmcid
-            
-            pmid = pmid_from_pmcid(pmcid)
-            
-            if pmid:
-                logging.info(f"Found PMID: {pmid} for PMCID: {pmcid}")
-                response_text += f" PMID: {pmid} was automatically retrieved from PMCID: {pmcid}."
-            else:
-                logging.warning(f"No PMID found for PMCID: {pmcid}")
-        except Exception as e:
-            logging.warning(f"Failed to get PMID from PMCID: {e}")
-            logging.exception("Exception details:")
-    
-    # Create the response using the PublicationResponse model
+    # Create PublicationResponse instance
     response = PublicationResponse(
         pmid=pmid,
         pmcid=pmcid,

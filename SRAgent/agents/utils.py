@@ -55,11 +55,12 @@ def set_model(
     temp = temperature or settings["temperature"].get(agent_name, settings["temperature"]["default"])
     effort = reasoning_effort or settings["reasoning_effort"].get(agent_name, settings["reasoning_effort"]["default"])
 
-    # Only reasoning effort or temperature can be set for certain models
+    # Only reasoning effort can be set for certain models
     if model_name.startswith("gpt-4o"):
         effort = None
     elif model_name.startswith("o1") or model_name.startswith("o3"):
-        temp = None
+        # Always set temperature to 0 for o1/o3 models if not explicitly provided
+        temp = temperature if temperature is not None else 0
     else:
         raise ValueError(f"Model {model_name} not supported")
     
