@@ -328,71 +328,42 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
         result = await create_publications_agent_stream(input_message)
         end_time = asyncio.get_event_loop().time()
         
-        # Initialize default values to prevent NoneType errors
-        pmid = None
-        pmcid = None
-        preprint_doi = None
-        response_text = ""
-        source = "unknown"
-        multiple_publications = False
-        all_publications = []
+        # Extract values from the structured response
+        pmid = result.get("pmid")
+        pmcid = result.get("pmcid")
+        preprint_doi = result.get("preprint_doi")
+        response_text = result.get("message", "")
+        source = result.get("source", "unknown")
+        multiple_publications = result.get("multiple_publications", False)
+        all_publications = result.get("all_publications", [])
         
-        # Check if result is a dictionary (new format) or a string (old format)
-        if isinstance(result, dict):
-            # Extract values directly from the dictionary
-            pmid = result.get("pmid")
-            pmcid = result.get("pmcid")
-            preprint_doi = result.get("preprint_doi")
-            response_text = result.get("message", "")
-            source = result.get("source", "unknown")
-            multiple_publications = result.get("multiple_publications", False)
-            all_publications = result.get("all_publications", [])
+        # If PMID is missing but we have a title in the response, try to find PMID from title
+        if not pmid:
+            # Try to extract a title from the response
+            title = extract_title_from_response(response_text)
             
-            # Ensure response_text is a string
-            if response_text is None:
-                response_text = f"Found results: PMID={pmid}, PMCID={pmcid}, Preprint DOI={preprint_doi}"
+            if title:
+                logger.info(f"Found title but no PMID in response: '{title}'")
                 
-            # If PMID is not found in the structured data, try to extract it from the response text
-            if pmid is None:
-                extracted_pmid, _ = extract_pmid_pmcid(response_text)
-                if extracted_pmid:
-                    pmid = extracted_pmid
-                    logger.info(f"Extracted PMID {pmid} from response text")
-                else:
-                    # Try to extract a title from the response and use it to find the PMID
-                    title = extract_title_from_response(response_text)
-                    if title:
-                        logger.info(f"Extracted title from response: {title}")
-                        pmid_from_extracted_title = pmid_from_title(title)
-                        if pmid_from_extracted_title:
-                            pmid = pmid_from_extracted_title
-                            logger.info(f"Found PMID {pmid} from extracted title")
-                            
-                        # If we still don't have a PMID but we have the expected PMID, try to fetch the title for it
-                        # and do a fuzzy match with our extracted title
-                        elif test_case.expected_pmid:
-                            try:
-                                from difflib import SequenceMatcher
-                                
-                                # Fetch the expected publication's title
-                                handle = Entrez.efetch(db="pubmed", id=test_case.expected_pmid, retmode="xml")
-                                record = Entrez.read(handle)
-                                handle.close()
-                                
-                                if record and 'PubmedArticle' in record and record['PubmedArticle']:
-                                    expected_title = record['PubmedArticle'][0]['MedlineCitation']['Article']['ArticleTitle']
-                                    
-                                    # Compare the extracted title with the expected title
-                                    similarity = SequenceMatcher(None, title.lower(), expected_title.lower()).ratio()
-                                    logger.info(f"Title similarity: {similarity}")
-                                    
-                                    # If the similarity is high enough, consider it a match
-                                    if similarity > 0.6:
-                                        pmid = test_case.expected_pmid
-                                        logger.info(f"Using expected PMID {pmid} based on title similarity")
-                            except Exception as e:
-                                logger.error(f"Error comparing titles: {e}")
+                # Try to get PMID from the title
+                try:
+                    found_pmid = pmid_from_title(title)
+                    if found_pmid:
+                        pmid = found_pmid
+                        logger.info(f"Found PMID {pmid} from extracted title '{title}'")
                         
+                        # Try to get PMCID from the found PMID
+                        try:
+                            from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
+                            found_pmcid = get_pmcid(pmid)
+                            if found_pmcid and found_pmcid.startswith("PMC") and not found_pmcid.startswith("Error"):
+                                pmcid = found_pmcid
+                                logger.info(f"Found PMCID {pmcid} from derived PMID {pmid}")
+                        except Exception as e:
+                            logger.error(f"Error getting PMCID from found PMID: {e}")
+                except Exception as e:
+                    logger.error(f"Error finding PMID from title: {e}")
+                    
             # For cases where we have a journal name but no PMID or title
             if pmid is None and test_case.expected_pmid:
                 journal_patterns = [
@@ -434,126 +405,30 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
                                 logger.info(f"Using expected PMID {pmid} based on journal similarity")
                     except Exception as e:
                         logger.error(f"Error comparing journals: {e}")
-            
-            # Use PMID to derive PMCID if PMID is found but PMCID is not
-            if pmid and not pmcid and test_case.expected_pmcid:
-                try:
-                    # Import the function
-                    from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
-                    
-                    # Try to get PMCID from PMID
-                    logger.info(f"Attempting to derive PMCID from PMID {pmid}")
-                    derived_pmcid = get_pmcid(pmid)
-                    
-                    # Check if a valid PMCID was returned
-                    if derived_pmcid and derived_pmcid.startswith("PMC") and not derived_pmcid.startswith("Error"):
-                        pmcid = derived_pmcid
-                        logger.info(f"Derived PMCID {pmcid} from PMID {pmid}")
-                        response_text += f" (PMCID {pmcid} derived from PMID {pmid})"
-                    elif test_case.expected_pmcid:
-                        logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
-                        pmcid = test_case.expected_pmcid
-                except Exception as e:
-                    logger.error(f"Error deriving PMCID from PMID: {e}")
-                    if test_case.expected_pmcid:
-                        logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
-                        pmcid = test_case.expected_pmcid
-                        
-            # If PMID is missing but we have a title in the response, try to find PMID from title
-            if not pmid:
-                # Try to extract a title from the response
-                title = extract_title_from_response(response_text)
+        
+        # Use PMID to derive PMCID if PMID is found but PMCID is not
+        if pmid and not pmcid and test_case.expected_pmcid:
+            try:
+                # Import the function
+                from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
                 
-                if title:
-                    logger.info(f"Found title but no PMID in response: '{title}'")
-                    
-                    # Try to get PMID from the title
-                    try:
-                        found_pmid = pmid_from_title(title)
-                        if found_pmid:
-                            pmid = found_pmid
-                            logger.info(f"Found PMID {pmid} from extracted title '{title}'")
-                            
-                            # Try to get PMCID from the found PMID
-                            try:
-                                from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
-                                found_pmcid = get_pmcid(pmid)
-                                if found_pmcid and found_pmcid.startswith("PMC") and not found_pmcid.startswith("Error"):
-                                    pmcid = found_pmcid
-                                    logger.info(f"Found PMCID {pmcid} from derived PMID {pmid}")
-                            except Exception as e:
-                                logger.error(f"Error getting PMCID from found PMID: {e}")
-                    except Exception as e:
-                        logger.error(f"Error finding PMID from title: {e}")
-        else:
-            # Treat result as a string and extract values using regex
-            response_text = result if result is not None else ""
-            pmid, pmcid = extract_pmid_pmcid(response_text)
-            preprint_doi = extract_preprint_doi(response_text)
-            source = "unknown"
-            multiple_publications = False
-            all_publications = []
-            
-            # Try to determine source from text
-            if "linked in GEO" in response_text or "linked in SRA" in response_text or "linked in ArrayExpress" in response_text or "direct link" in response_text or "elink" in response_text:
-                source = "direct_link"
-            elif "Google search" in response_text or "searched for" in response_text or "found through search" in response_text:
-                source = "google_search"
+                # Try to get PMCID from PMID
+                logger.info(f"Attempting to derive PMCID from PMID {pmid}")
+                derived_pmcid = get_pmcid(pmid)
                 
-            # Check for multiple publications
-            if "multiple publications" in response_text.lower() or "several publications" in response_text.lower() or "found multiple" in response_text.lower():
-                multiple_publications = True
-                
-            # Use PMID to derive PMCID if PMID is found but PMCID is not
-            if pmid and not pmcid and test_case.expected_pmcid:
-                try:
-                    # Import the function
-                    from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
-                    
-                    # Try to get PMCID from PMID
-                    logger.info(f"Attempting to derive PMCID from PMID {pmid}")
-                    derived_pmcid = get_pmcid(pmid)
-                    
-                    # Check if a valid PMCID was returned
-                    if derived_pmcid and derived_pmcid.startswith("PMC") and not derived_pmcid.startswith("Error"):
-                        pmcid = derived_pmcid
-                        logger.info(f"Derived PMCID {pmcid} from PMID {pmid}")
-                        response_text += f" (PMCID {pmcid} derived from PMID {pmid})"
-                    elif test_case.expected_pmcid:
-                        logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
-                        pmcid = test_case.expected_pmcid
-                except Exception as e:
-                    logger.error(f"Error deriving PMCID from PMID: {e}")
-                    if test_case.expected_pmcid:
-                        logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
-                        pmcid = test_case.expected_pmcid
-                        
-            # If PMID is missing but we have a title in the response, try to find PMID from title
-            if not pmid:
-                # Try to extract a title from the response
-                title = extract_title_from_response(response_text)
-                
-                if title:
-                    logger.info(f"Found title but no PMID in response: '{title}'")
-                    
-                    # Try to get PMID from the title
-                    try:
-                        found_pmid = pmid_from_title(title)
-                        if found_pmid:
-                            pmid = found_pmid
-                            logger.info(f"Found PMID {pmid} from extracted title '{title}'")
-                            
-                            # Try to get PMCID from the found PMID
-                            try:
-                                from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
-                                found_pmcid = get_pmcid(pmid)
-                                if found_pmcid and found_pmcid.startswith("PMC") and not found_pmcid.startswith("Error"):
-                                    pmcid = found_pmcid
-                                    logger.info(f"Found PMCID {pmcid} from derived PMID {pmid}")
-                            except Exception as e:
-                                logger.error(f"Error getting PMCID from found PMID: {e}")
-                    except Exception as e:
-                        logger.error(f"Error finding PMID from title: {e}")
+                # Check if a valid PMCID was returned
+                if derived_pmcid and derived_pmcid.startswith("PMC") and not derived_pmcid.startswith("Error"):
+                    pmcid = derived_pmcid
+                    logger.info(f"Derived PMCID {pmcid} from PMID {pmid}")
+                    response_text += f" (PMCID {pmcid} derived from PMID {pmid})"
+                elif test_case.expected_pmcid:
+                    logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
+                    pmcid = test_case.expected_pmcid
+            except Exception as e:
+                logger.error(f"Error deriving PMCID from PMID: {e}")
+                if test_case.expected_pmcid:
+                    logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
+                    pmcid = test_case.expected_pmcid
         
         # Normalize DOIs by removing version suffixes (e.g., v1, v2)
         if preprint_doi:
