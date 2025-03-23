@@ -146,7 +146,7 @@ TEST_CASES = [
         expected_pmid="34153974",
         expected_pmcid="PMC8400927",
         expected_preprint_doi=None,
-        description="This study on COVID-19 brain effects should return the correct Nature publication with PMID 34153974. The title is 'Dysregulation of brain and choroid plexus cell types in severe COVID-19'."
+        description="This study on COVID-19 brain effects should return the correct Nature publication with PMID 34153974. The title is 'Dysregulation of brain and choroid plexus cell types in severe COVID-19'. This test case verifies that the agent correctly ignores the publisher correction (PMID: 34625744) and finds the original article instead."
     ),
     # Add more test cases as needed
 ]
@@ -305,6 +305,24 @@ def extract_title_from_response(response_text: str) -> Optional[str]:
     
     return title
 
+def normalize_doi(doi: Optional[str]) -> Optional[str]:
+    """Normalize a DOI by removing version suffixes and any trailing punctuation"""
+    if not doi:
+        return doi
+    # Remove trailing punctuation
+    doi = doi.rstrip('.,;)')
+    # Remove version suffixes like v1, v2, etc.
+    import re
+    return re.sub(r'v\d+$', '', doi)
+
+def are_dois_equivalent(doi1: Optional[str], doi2: Optional[str]) -> bool:
+    """Compare two DOIs, considering them equivalent if they match after normalization"""
+    if doi1 is None and doi2 is None:
+        return True
+    if doi1 is None or doi2 is None:
+        return False
+    return normalize_doi(doi1) == normalize_doi(doi2)
+
 async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str, Any]:
     """
     Evaluate a single test case.
@@ -432,12 +450,12 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
         
         # Normalize DOIs by removing version suffixes (e.g., v1, v2)
         if preprint_doi:
-            preprint_doi_normalized = re.sub(r'v\d+$', '', preprint_doi)
+            preprint_doi_normalized = normalize_doi(preprint_doi)
         else:
             preprint_doi_normalized = None
             
         if test_case.expected_preprint_doi:
-            expected_preprint_doi_normalized = re.sub(r'v\d+$', '', test_case.expected_preprint_doi)
+            expected_preprint_doi_normalized = normalize_doi(test_case.expected_preprint_doi)
         else:
             expected_preprint_doi_normalized = None
         
@@ -452,7 +470,7 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
             # For cases where a publication or preprint is expected
             pmid_correct = pmid == test_case.expected_pmid if test_case.expected_pmid else True
             pmcid_correct = pmcid == test_case.expected_pmcid if test_case.expected_pmcid else True
-            preprint_doi_correct = preprint_doi_normalized == expected_preprint_doi_normalized if expected_preprint_doi_normalized else True
+            preprint_doi_correct = are_dois_equivalent(preprint_doi_normalized, expected_preprint_doi_normalized)
         
         # Store the results
         results = {

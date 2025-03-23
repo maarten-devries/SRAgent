@@ -42,7 +42,7 @@ def set_model(
     Args:
         model_name: Override model name from settings
         temperature: Override temperature from settings
-        reasoning_effort: Override reasoning effort from settings
+        reasoning_effort: Override reasoning effort from settings (ignored)
         agent_name: Name of the agent to get settings for
     Returns:
         Configured model instance
@@ -53,11 +53,10 @@ def set_model(
     # Use provided params or get from settings
     model_name = model_name or settings["models"].get(agent_name, settings["models"]["default"])
     temp = temperature or settings["temperature"].get(agent_name, settings["temperature"]["default"])
-    effort = reasoning_effort or settings["reasoning_effort"].get(agent_name, settings["reasoning_effort"]["default"])
 
     # Only reasoning effort can be set for certain models
     if model_name.startswith("gpt-4o"):
-        effort = None
+        pass
     elif model_name.startswith("o1") or model_name.startswith("o3"):
         # Always set temperature to 0 for o1/o3 models if not explicitly provided
         temp = temperature if temperature is not None else 0
@@ -65,7 +64,7 @@ def set_model(
         raise ValueError(f"Model {model_name} not supported")
     
     # Initialize model
-    model = ChatOpenAI(model_name=model_name, temperature=temp, reasoning_effort=effort)
+    model = ChatOpenAI(model_name=model_name, temperature=temp)
 
     return model
 
