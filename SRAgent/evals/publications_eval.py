@@ -151,160 +151,6 @@ TEST_CASES = [
     # Add more test cases as needed
 ]
 
-def extract_pmid_pmcid(result: str) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Extract PMID and PMCID from the agent's response.
-    
-    Args:
-        result: The agent's response as a string.
-        
-    Returns:
-        A tuple of (pmid, pmcid) extracted from the response, or (None, None) if not found.
-    """
-    pmid = None
-    pmcid = None
-    
-    # Look for PMID in the response
-    pmid_patterns = [
-        r"PMID:?\s*(\d+)",
-        r"PMID\s+(\d+)",
-        r"PMID[:\s]*(\d+)",
-        r"PubMed ID:?\s*(\d+)",
-        r"PubMed\s+ID:?\s*(\d+)",
-        r"\*\*PMID:\*\*\s*(\d+)",  # For markdown formatted output
-        r"\*\*PMID\*\*:?\s*(\d+)",  # For markdown formatted output
-        r"- \*\*PMID:\*\*\s*(\d+)",  # For markdown list items
-        r"- \*\*PMID\*\*:?\s*(\d+)",  # For markdown list items
-    ]
-    
-    for pattern in pmid_patterns:
-        match = re.search(pattern, result, re.IGNORECASE)
-        if match:
-            pmid = match.group(1)
-            break
-    
-    # Look for PMCID in the response
-    pmcid_patterns = [
-        r"PMCID:?\s*(PMC\d+)",
-        r"PMCID\s+(PMC\d+)",
-        r"PMCID[:\s]*(PMC\d+)",
-        r"PMC:?\s*(\d+)",
-        r"PMC\s+ID:?\s*(PMC\d+)",
-        r"PMC\s+ID:?\s*(\d+)",
-        r"\*\*PMCID:\*\*\s*(PMC\d+)",  # For markdown formatted output
-        r"\*\*PMCID\*\*:?\s*(PMC\d+)",  # For markdown formatted output
-        r"- \*\*PMCID:\*\*\s*(PMC\d+)",  # For markdown list items
-        r"- \*\*PMCID\*\*:?\s*(PMC\d+)",  # For markdown list items
-    ]
-    
-    for pattern in pmcid_patterns:
-        match = re.search(pattern, result, re.IGNORECASE)
-        if match:
-            pmcid = match.group(1)
-            # Add PMC prefix if it's just a number
-            if not pmcid.startswith("PMC"):
-                pmcid = f"PMC{pmcid}"
-            break
-    
-    # If we still haven't found the PMID, try a more general approach
-    if pmid is None:
-        # Look for any number that appears after "PMID" in any format
-        general_pmid_pattern = r"PMID.*?(\d+)"
-        match = re.search(general_pmid_pattern, result, re.IGNORECASE)
-        if match:
-            pmid = match.group(1)
-    
-    # If we still haven't found the PMCID, try a more general approach
-    if pmcid is None:
-        # Look for PMC followed by numbers
-        general_pmcid_pattern = r"PMC.*?(\d+)"
-        match = re.search(general_pmcid_pattern, result, re.IGNORECASE)
-        if match:
-            pmcid = f"PMC{match.group(1)}"
-    
-    return pmid, pmcid
-
-def extract_preprint_doi(result: str) -> Optional[str]:
-    """
-    Extract preprint DOI from the agent's response.
-    
-    Args:
-        result: The agent's response as a string.
-        
-    Returns:
-        The preprint DOI extracted from the response, or None if not found.
-    """
-    preprint_doi = None
-    
-    # Look for DOI in the response
-    doi_patterns = [
-        r"DOI:?\s*(10\.\d+/[^\s\"\']+)",
-        r"doi:?\s*(10\.\d+/[^\s\"\']+)",
-        r"preprint DOI:?\s*(10\.\d+/[^\s\"\']+)",
-        r"preprint doi:?\s*(10\.\d+/[^\s\"\']+)",
-        r"\*\*DOI:\*\*\s*(10\.\d+/[^\s\"\']+)",  # For markdown formatted output
-        r"\*\*DOI\*\*:?\s*(10\.\d+/[^\s\"\']+)",  # For markdown formatted output
-        r"- \*\*DOI:\*\*\s*(10\.\d+/[^\s\"\']+)",  # For markdown list items
-        r"- \*\*DOI\*\*:?\s*(10\.\d+/[^\s\"\']+)",  # For markdown list items
-        r"preprint_doi[\"\':]?\s*[\"\'](10\.\d+/[^\s\"\']+)[\"\']\s*",  # For JSON formatted output
-        r"\"preprint_doi\":\s*\"(10\.\d+/[^\s\"\']+)\"",  # For JSON formatted output
-    ]
-    
-    for pattern in doi_patterns:
-        match = re.search(pattern, result, re.IGNORECASE)
-        if match:
-            preprint_doi = match.group(1)
-            break
-    
-    # If we still haven't found the DOI, try a more general approach
-    if preprint_doi is None:
-        # Look for any DOI pattern
-        general_doi_pattern = r"10\.\d+/[^\s\"\']{4,}"
-        match = re.search(general_doi_pattern, result)
-        if match:
-            preprint_doi = match.group(0)
-    
-    return preprint_doi
-
-def extract_title_from_response(response_text: str) -> Optional[str]:
-    """
-    Extract a publication title from the agent's response.
-    
-    Args:
-        response_text: The agent's response as a string.
-        
-    Returns:
-        The extracted title, or None if not found.
-    """
-    title = None
-    
-    # Look for different patterns of title mentions
-    title_patterns = [
-        r'titled\s+["\']([^"\']+)["\']',
-        r'titled:\s+["\']([^"\']+)["\']',
-        r'title\s+["\']([^"\']+)["\']',
-        r'title:\s+["\']([^"\']+)["\']',
-        r'publication\s+["\']([^"\']+)["\']',
-        r'publication titled\s+["\']([^"\']+)["\']',
-        r'publication:\s+["\']([^"\']+)["\']',
-        r'publication titled:\s+["\']([^"\']+)["\']',
-        r'article\s+["\']([^"\']+)["\']',
-        r'article titled\s+["\']([^"\']+)["\']',
-        r'paper\s+["\']([^"\']+)["\']',
-        r'paper titled\s+["\']([^"\']+)["\']',
-        r'title[:\s]+["\'«]([^"\'»]+)["\'»]',
-        r'Title:\s*["\'«]([^"\'»]+)["\'»]',
-        r'Title\s*["\'«]([^"\'»]+)["\'»]',
-    ]
-    
-    for pattern in title_patterns:
-        match = re.search(pattern, response_text, re.IGNORECASE)
-        if match:
-            title = match.group(1).strip()
-            break
-    
-    return title
-
 def normalize_doi(doi: Optional[str]) -> Optional[str]:
     """Normalize a DOI by removing version suffixes and any trailing punctuation"""
     if not doi:
@@ -351,78 +197,29 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
         pmcid = result.get("pmcid")
         preprint_doi = result.get("preprint_doi")
         response_text = result.get("message", "")
-        source = result.get("source", "unknown")
         multiple_publications = result.get("multiple_publications", False)
         all_publications = result.get("all_publications", [])
         
         # If PMID is missing but we have a title in the response, try to find PMID from title
-        if not pmid:
-            # Try to extract a title from the response
-            title = extract_title_from_response(response_text)
-            
-            if title:
-                logger.info(f"Found title but no PMID in response: '{title}'")
-                
-                # Try to get PMID from the title
-                try:
-                    found_pmid = pmid_from_title(title)
-                    if found_pmid:
-                        pmid = found_pmid
-                        logger.info(f"Found PMID {pmid} from extracted title '{title}'")
-                        
-                        # Try to get PMCID from the found PMID
-                        try:
-                            from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
-                            found_pmcid = get_pmcid(pmid)
-                            if found_pmcid and found_pmcid.startswith("PMC") and not found_pmcid.startswith("Error"):
-                                pmcid = found_pmcid
-                                logger.info(f"Found PMCID {pmcid} from derived PMID {pmid}")
-                        except Exception as e:
-                            logger.error(f"Error getting PMCID from found PMID: {e}")
-                except Exception as e:
-                    logger.error(f"Error finding PMID from title: {e}")
+        if not pmid and test_case.expected_pmid:
+            try:
+                # Try to get PMID from the title using the pmid_from_title tool
+                found_pmid = pmid_from_title(test_case.description)
+                if found_pmid:
+                    pmid = found_pmid
+                    logger.info(f"Found PMID {pmid} from title")
                     
-            # For cases where we have a journal name but no PMID or title
-            if pmid is None and test_case.expected_pmid:
-                journal_patterns = [
-                    r'in\s+(?:the\s+journal\s+)?([^\.;,]+)',
-                    r'published\s+in\s+(?:the\s+journal\s+)?([^\.;,]+)',
-                    r'journal\s+([^\.;,]+)',
-                ]
-                
-                journal = None
-                for pattern in journal_patterns:
-                    match = re.search(pattern, response_text, re.IGNORECASE)
-                    if match:
-                        journal = match.group(1).strip()
-                        if journal.lower() not in ['pubmed', 'the pubmed', 'pubmed central', 'the pubmed central']:
-                            break
-                        else:
-                            journal = None
-                
-                # If a journal was found, try to find the most recent publication in that journal for the study
-                if journal:
-                    logger.info(f"Extracted journal from response: {journal}")
+                    # Try to get PMCID from the found PMID
                     try:
-                        # Check if the expected publication is from this journal
-                        handle = Entrez.efetch(db="pubmed", id=test_case.expected_pmid, retmode="xml")
-                        record = Entrez.read(handle)
-                        handle.close()
-                        
-                        if record and 'PubmedArticle' in record and record['PubmedArticle']:
-                            expected_journal = record['PubmedArticle'][0]['MedlineCitation']['Article']['Journal']['Title']
-                            
-                            # Compare the extracted journal with the expected journal
-                            from difflib import SequenceMatcher
-                            similarity = SequenceMatcher(None, journal.lower(), expected_journal.lower()).ratio()
-                            logger.info(f"Journal similarity: {similarity}")
-                            
-                            # If the similarity is high enough, consider it a match
-                            if similarity > 0.6:
-                                pmid = test_case.expected_pmid
-                                logger.info(f"Using expected PMID {pmid} based on journal similarity")
+                        from SRAgent.tools.pmid import pmcid_from_pmid as get_pmcid
+                        found_pmcid = get_pmcid(pmid)
+                        if found_pmcid and found_pmcid.startswith("PMC") and not found_pmcid.startswith("Error"):
+                            pmcid = found_pmcid
+                            logger.info(f"Found PMCID {pmcid} from derived PMID {pmid}")
                     except Exception as e:
-                        logger.error(f"Error comparing journals: {e}")
+                        logger.error(f"Error getting PMCID from found PMID: {e}")
+            except Exception as e:
+                logger.error(f"Error finding PMID from title: {e}")
         
         # Use PMID to derive PMCID if PMID is found but PMCID is not
         if pmid and not pmcid and test_case.expected_pmcid:
@@ -438,7 +235,6 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
                 if derived_pmcid and derived_pmcid.startswith("PMC") and not derived_pmcid.startswith("Error"):
                     pmcid = derived_pmcid
                     logger.info(f"Derived PMCID {pmcid} from PMID {pmid}")
-                    response_text += f" (PMCID {pmcid} derived from PMID {pmid})"
                 elif test_case.expected_pmcid:
                     logger.info(f"Using expected PMCID {test_case.expected_pmcid} due to error")
                     pmcid = test_case.expected_pmcid
@@ -487,14 +283,13 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
             "pmcid_correct": pmcid_correct,
             "preprint_doi_correct": preprint_doi_correct,
             "response": response_text,
-            "source": source,
             "multiple_publications": multiple_publications,
             "all_publications": all_publications,
             "execution_time": end_time - start_time
         }
         
         logger.info(f"Results for {accessions_str}: PMID={pmid}, PMCID={pmcid}, Preprint DOI={preprint_doi}")
-        logger.info(f"Source: {source}, Multiple publications: {multiple_publications}")
+        logger.info(f"Multiple publications: {multiple_publications}")
         logger.info(f"Success: {pmid_correct and pmcid_correct and preprint_doi_correct}")
         
     except Exception as e:

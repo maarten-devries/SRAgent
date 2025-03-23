@@ -118,7 +118,6 @@ def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
         " 2) For each accession, note whether you tried searching it and what the result was",
         " 3) If you got the study title, include it and note whether you searched for it",
         " 4) If you found any potential matches, explain why you think they are or aren't correct",
-        " 5) End with a clear SOURCE: tag (DIRECT_LINK, GOOGLE_SEARCH, or NOT_FOUND)",
         "# Multiple Accessions",
         " - When given multiple accession numbers, ALWAYS assume they are linked to the same publication and don't attempt to verify if they are related.",
         " - Use multiple accessions as different 'shots on goal' - try each one to find the publication.",
@@ -151,19 +150,6 @@ def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
         " - Different accession types (SRP, PRJNA, GSE) may need different approaches.",
         " - For SRA accessions (SRP, PRJNA), use the sra database.",
         " - For GEO accessions (GSE), use the gds database.",
-        "# Response Format",
-        " - Your response will be structured using the PublicationResponse model with the following fields:",
-        "   - pmid: The PMID as a string, or null if not found",
-        "   - pmcid: The PMCID as a string, or null if not found",
-        "   - preprint_doi: The preprint DOI as a string, or null if not found",
-        "   - message: A brief message explaining your findings",
-        "   - source: How the publication was found ('direct_link', 'google_search', or 'not_found')",
-        "   - multiple_publications: Whether multiple publications were found through direct links",
-        "   - all_publications: List of all publications found if multiple_publications is true",
-        " - If you find a preprint (with DOI) but no published version in PubMed yet, it's acceptable to have null values for PMID and PMCID while providing the preprint_doi.",
-        " - The message should be concise and provide only the relevant information.",
-        " - When reporting results for multiple accessions, clearly state that the publication applies to all accessions.",
-        " - REMEMBER to include the source information in your message using one of the exact phrases mentioned above.",
     ])
 
     # create agent
@@ -200,79 +186,6 @@ def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
         return result
     
     return invoke_publications_agent
-
-def extract_pmid_pmcid(result: str) -> tuple:
-    """
-    Extract PMID and PMCID from the agent's response.
-    
-    Args:
-        result: The agent's response as a string.
-        
-    Returns:
-        A tuple of (pmid, pmcid) extracted from the response, or (None, None) if not found.
-    """
-    pmid = None
-    pmcid = None
-    
-    # Look for PMID in the response
-    pmid_patterns = [
-        r"PMID:?\s*(\d+)",
-        r"PMID\s+(\d+)",
-        r"PMID[:\s]*(\d+)",
-        r"PubMed ID:?\s*(\d+)",
-        r"PubMed\s+ID:?\s*(\d+)",
-        r"\*\*PMID:\*\*\s*(\d+)",  # For markdown formatted output
-        r"\*\*PMID\*\*:?\s*(\d+)",  # For markdown formatted output
-        r"- \*\*PMID:\*\*\s*(\d+)",  # For markdown list items
-        r"- \*\*PMID\*\*:?\s*(\d+)",  # For markdown list items
-    ]
-    
-    for pattern in pmid_patterns:
-        match = re.search(pattern, result, re.IGNORECASE)
-        if match:
-            pmid = match.group(1)
-            break
-    
-    # Look for PMCID in the response
-    pmcid_patterns = [
-        r"PMCID:?\s*(PMC\d+)",
-        r"PMCID\s+(PMC\d+)",
-        r"PMCID[:\s]*(PMC\d+)",
-        r"PMC:?\s*(\d+)",
-        r"PMC\s+ID:?\s*(PMC\d+)",
-        r"PMC\s+ID:?\s*(\d+)",
-        r"\*\*PMCID:\*\*\s*(PMC\d+)",  # For markdown formatted output
-        r"\*\*PMCID\*\*:?\s*(PMC\d+)",  # For markdown formatted output
-        r"- \*\*PMCID:\*\*\s*(PMC\d+)",  # For markdown list items
-        r"- \*\*PMCID\*\*:?\s*(PMC\d+)",  # For markdown list items
-    ]
-    
-    for pattern in pmcid_patterns:
-        match = re.search(pattern, result, re.IGNORECASE)
-        if match:
-            pmcid = match.group(1)
-            # Add PMC prefix if it's just a number
-            if not pmcid.startswith("PMC"):
-                pmcid = f"PMC{pmcid}"
-            break
-    
-    # If we still haven't found the PMID, try a more general approach
-    if pmid is None:
-        # Look for any number that appears after "PMID" in any format
-        general_pmid_pattern = r"PMID.*?(\d+)"
-        match = re.search(general_pmid_pattern, result, re.IGNORECASE)
-        if match:
-            pmid = match.group(1)
-    
-    # If we still haven't found the PMCID, try a more general approach
-    if pmcid is None:
-        # Look for PMC followed by numbers
-        general_pmcid_pattern = r"PMC.*?(\d+)"
-        match = re.search(general_pmcid_pattern, result, re.IGNORECASE)
-        if match:
-            pmcid = f"PMC{match.group(1)}"
-    
-    return pmid, pmcid
 
 async def create_publications_agent_stream(input, config: dict={}, summarize_steps: bool=False) -> Dict[str, Any]:
     """Create a streaming version of the publications agent."""
