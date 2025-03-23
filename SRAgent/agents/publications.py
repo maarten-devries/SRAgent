@@ -21,16 +21,35 @@ from SRAgent.agents.esearch import create_esearch_agent
 from SRAgent.agents.esummary import create_esummary_agent
 from SRAgent.agents.efetch import create_efetch_agent
 from SRAgent.agents.elink import create_elink_agent
-from SRAgent.agents.utils import create_step_summary_chain
+from SRAgent.agents.utils import create_step_summary_chain, set_model
 from SRAgent.tools.google_search import google_search_tool
-from SRAgent.tools.pmid import pmcid_from_pmid, pmid_from_pmcid, get_publication_details
+from SRAgent.tools.pmid import pmcid_from_pmid, pmid_from_pmcid, get_publication_details, pmid_from_title_tool
 from SRAgent.tools.study_info import get_study_title_from_accession
+from SRAgent.tools.author_verification import (
+    get_author_year,
+    get_sra_authors,
+    get_geo_authors,
+    get_arrayexpress_authors,
+    get_arrayexpress_publication_info
+)
 
 # Configure logging to suppress specific messages
 def configure_logging():
     """
     Configure logging to suppress specific log messages.
     """
+    # Set up root logger
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+    
+    # Enable debug logging for langchain
+    logging.getLogger("langchain").setLevel(logging.DEBUG)
+    logging.getLogger("langchain.core").setLevel(logging.DEBUG)
+    logging.getLogger("langchain.agents").setLevel(logging.DEBUG)
+    
     # Suppress httpx logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
@@ -41,57 +60,32 @@ def configure_logging():
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
 
+class Publication(BaseModel):
+    """Model for a single publication"""
+    pmid: Optional[str]
+    pmcid: Optional[str]
+    preprint_doi: Optional[str]
+
 class PublicationResponse(BaseModel):
     """Response model for publication search results"""
-    pmid: Optional[str] = None
-    pmcid: Optional[str] = None
-    preprint_doi: Optional[str] = None
-    message: str
-    multiple_publications: bool = False
-    all_publications: List[Dict[str, Any]] = []
+    pmid: Optional[str]
+    pmcid: Optional[str]
+    preprint_doi: Optional[str]
+    activity_summary: str  # Detailed step-by-step summary of actions taken and reasoning
+    multiple_publications: bool
+    all_publications: List[Publication]
 
 # functions
 def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
     """Create an agent for finding publications linked to accessions"""
-    instructions = """You are an expert at finding scientific publications linked to biological data accessions.
-    
-    Follow these steps in order and document each attempt in your response:
-    1. For GEO accessions (starting with GSE, GDS, etc.), use get_pmid_from_geo to find directly linked publications
-       - If you find both PMID and PMCID, STOP and return these results
-    2. For other accessions, find publications linked in GEO or SRA databases using elink
-       - If you find both PMID and PMCID, STOP and return these results
-    3. If you have a study title:
-       a. Search PubMed first using esearch with the title
-       b. If found, verify it's the correct paper and STOP
-    4. Search for accession numbers on Google with quotes
-    5. If still unsuccessful:
-       a. Get the study title if you haven't already
-       b. Search for it on Google, being careful to verify relevance
-       c. Search for it on bioRxiv/medRxiv to find potential preprints
-    6. If you find a PMCID without a PMID, use the pmid_from_pmcid tool to get the PMID
-    7. Only report preprints if:
-       a. You are confident they are related to the accessions
-       b. No peer-reviewed publication exists for the same work
-
-    IMPORTANT: 
-    - STOP SEARCHING as soon as you find both a valid PMID and PMCID
-    - Never return publisher corrections, errata, or corrigenda
-    - For GEO accessions, always try get_pmid_from_geo first
-    - When verifying PMCIDs, always use pmcid_from_pmid to verify
-
-    Your response must include:
-    - pmid: The PMID as a string, or null if not found
-    - pmcid: The PMCID as a string, or null if not found
-    - preprint_doi: The preprint DOI as a string, or null if not found (must be null if PMID or PMCID exists)
-    - message: A numbered list of steps taken and how the publication was found
-    - multiple_publications: Whether multiple publications were found through direct links
-    - all_publications: List of all publications found if multiple_publications is true"""
-    
     # Configure logging to suppress specific messages
     configure_logging()
+    logger = logging.getLogger(__name__)
+    logger.debug("Creating publications agent")
     
     # create model
-    model_supervisor = ChatOpenAI(model="gpt-4o", temperature=0)
+    model_supervisor = set_model(agent_name="publications")
+    logger.debug(f"Created model supervisor: {model_supervisor}")
 
     # set tools
     tools = [
@@ -104,63 +98,77 @@ def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
         pmid_from_pmcid,
         get_publication_details,
         get_study_title_from_accession,
+        get_author_year,
+        get_sra_authors,
+        get_geo_authors,
+        get_arrayexpress_authors,
+        get_arrayexpress_publication_info,
+        pmid_from_title_tool,
     ]
-  
+    logger.debug(f"Set up {len(tools)} tools")
+
     # state modifier
-    state_mod = "\n".join([
-        "# Instructions",
-        instructions,
-        "# Response Format",
-        " Your response message MUST include:",
-        " 1) A numbered list of all steps you tried, including:",
-        "    - What specific action you took (e.g., 'Searched GEO database using elink')",
-        "    - What the result was (e.g., 'No direct links found')",
-        " 2) For each accession, note whether you tried searching it and what the result was",
-        " 3) If you got the study title, include it and note whether you searched for it",
-        " 4) If you found any potential matches, explain why you think they are or aren't correct",
-        "# Multiple Accessions",
-        " - When given multiple accession numbers, ALWAYS assume they are linked to the same publication and don't attempt to verify if they are related.",
-        " - Use multiple accessions as different 'shots on goal' - try each one to find the publication.",
-        " - Authors may refer to different accession numbers in their paper, so trying each one increases chances of finding the publication.",
-        " - In general, if a GSE / E-MTAB accession is given, try that first before trying the SRP / PRJNA accession, since I have found that these IDs usually have higher success rates.",
-        " - Once you find a publication using any of the accessions, stop searching and report it as the result for all accessions.",
-        "# Multiple Publications",
-        " - IMPORTANT: If you find multiple publications directly linked to the accessions through GEO/SRA/ArrayExpress, you MUST report this in your response.",
-        " - When multiple publications are found, you need to select a primary publication for metadata curation.",
-        " - Criteria for selecting the primary publication:",
-        "   1. Choose the most comprehensive or detailed publication (usually the one with the most pages or in a higher impact journal)",
-        "   2. Choose the most recent publication if they appear to be equally comprehensive",
-        "   3. Choose the publication that most directly describes the dataset (rather than a review or secondary analysis)",
-        " - In your response, clearly indicate that multiple publications were found and which one you've selected as primary.",
-        " - List all publications with their PMIDs, PMCIDs, and titles.",
-        " - ONLY report multiple publications when they are directly linked through databases, NOT when found through Google search.",
-        "# Source Tracking",
-        " - CRITICAL: You MUST explicitly state in your response how you found the publication using one of these exact phrases:",
-        "   - 'SOURCE: DIRECT_LINK' - If found through direct links in GEO/SRA/ArrayExpress databases",
-        "   - 'SOURCE: GOOGLE_SEARCH' - If found through Google search",
-        "   - 'SOURCE: NOT_FOUND' - If no publication was found",
-        " - This source information MUST be included in your message, preferably at the beginning or end.",
-        " - This information is critical for the researcher to assess the reliability of the match.",
-        "# Preprints",
-        " - If a preprint best matches the publication you're looking for, report the preprint doi it as the result for all accessions.",
-        "# Calling agents",
-        " - Be sure to provide context to the agents (e.g., \"Use elink to find publications linked to SRP557106\").",
-        " - Generally, you will want to specify the database(s) to search (e.g., sra, gds, or pubmed).",
-        "# Conversion",
-        " - Different accession types (SRP, PRJNA, GSE) may need different approaches.",
-        " - For SRA accessions (SRP, PRJNA), use the sra database.",
-        " - For GEO accessions (GSE), use the gds database.",
-    ])
+    state_mod = """
+Given several accessions (all corresponding to the same study), your job is to find the PubMed ID of the publication associated with the study.
+If it's a preprint only, you should return the DOI of the preprint, not the PMID.
+
+SEARCH STRATEGY AND REASONING:
+1. Start with database-linked publications:
+   - WHY: Most studies link their publications directly in GEO/SRA/ArrayExpress
+   - HOW: Check each database in this order:
+     a) For GEO accessions (GSE*): Use get_pmid_from_geo first
+     b) For ArrayExpress (E-MTAB-*): Use get_arrayexpress_publication_info
+     c) For SRA (SRP/PRJNA): Get Entrez IDs first, then use elink
+
+2. If you find a title but no PMID:
+   - WHY: Sometimes databases only store the title, not the PMID
+   - HOW: Use pmid_from_title_tool to search PubMed
+   - IMPORTANT: You must verify author matches between publication and data source:
+     * Use get_author_year for publication authors
+     * Use get_sra_authors/get_geo_authors/get_arrayexpress_authors for data source
+     * Consider that data submitters might be a subset of all authors
+
+3. If no direct links found:
+   - WHY: Publications might exist but not be linked in databases
+   - HOW: Try Google search with accession numbers in quotes
+   - Then: Search for study title in bioRxiv/medRxiv for preprints
+
+IMPORTANT RULES:
+- Stop searching as soon as you find both valid PMID and PMCID
+- Never return publisher corrections or errata
+- Remove version suffixes (v1, v2) from preprint DOIs
+- For multiple accessions, try each one (they're all from the same study)
+- Prefer GSE/E-MTAB accessions over SRP/PRJNA when available
+
+YOUR RESPONSE:
+The activity_summary in your response must be a numbered list of every step taken, including:
+- What you tried and why
+- What you found
+- What you decided to do next
+Example:
+1. Checked GEO database first because GSE123 is a GEO accession
+   - Result: Found title but no PMID
+   - Next: Will search PubMed with title
+2. Searched PubMed with title
+   - Found PMID 12345
+   - Next: Verifying authors match
+[etc...]
+
+Remember to document your reasoning at each step to help understand your decision-making process.
+"""
 
     # create agent
+    logger.debug("Creating React agent with tools and state modifier")
     agent = create_react_agent(
         model=model_supervisor,
         tools=tools,
         state_modifier=state_mod
     )
+    logger.debug("Created React agent")
 
     # return agent instead of tool
     if not return_tool:
+        logger.debug("Returning agent directly")
         return agent
 
     @tool
@@ -172,62 +180,28 @@ def create_publications_agent(return_tool: bool = True) -> AgentExecutor:
         Invoke the Publications agent with a message.
         The Publications agent will find publications associated with study accessions.
         """
-        # Ensure config is a dictionary and set temperature
-        if config is None:
-            config = {}
-        config = dict(config)  # Make a copy to avoid modifying the original
-        config["temperature"] = 0
-        
+        logger.debug(f"Invoking publications agent with message: {message}")
         # Invoke the agent with the message
         result = await agent.ainvoke(
             {"messages" : [AIMessage(content=message)]}, 
             config=config
         )
+        logger.debug(f"Agent returned result: {result}")
         return result
     
+    logger.debug("Returning publications agent tool")
     return invoke_publications_agent
 
-async def create_publications_agent_stream(input, config: dict={}, summarize_steps: bool=False) -> Dict[str, Any]:
-    """Create a streaming version of the publications agent."""
-    # Configure logging to suppress specific messages
-    configure_logging()
-    
-    # create agent
+async def create_publications_agent_stream(input: Dict[str, Any]) -> PublicationResponse:
+    """Create a publications agent that returns a stream of responses."""
+    # Create the base agent
     agent = create_publications_agent(return_tool=False)
     
-    # create step summary chain
-    step_summary_chain = create_step_summary_chain() if summarize_steps else None
+    # Run the agent and get the response
+    result = await agent.ainvoke(input)
     
-    # Ensure config is a dictionary and set temperature
-    if config is None:
-        config = {}
-    config = dict(config)
-    config["temperature"] = 0
-    
-    # invoke agent with structured output
-    try:
-        if summarize_steps and step_summary_chain:
-            result = await agent.with_structured_output(PublicationResponse).ainvoke(
-                input,
-                config=config,
-                step_callback=step_summary_chain
-            )
-        else:
-            result = await agent.with_structured_output(PublicationResponse).ainvoke(
-                input,
-                config=config
-            )
-        return result.model_dump()
-    except Exception as e:
-        # Fallback response if something goes wrong
-        return PublicationResponse(
-            pmid=None,
-            pmcid=None,
-            preprint_doi=None,
-            message=f"Failed to get response: {str(e)}",
-            multiple_publications=False,
-            all_publications=[]
-        ).model_dump()
+    # Return the response (already structured due to model's structured output)
+    return result
 
 # main
 if __name__ == '__main__':

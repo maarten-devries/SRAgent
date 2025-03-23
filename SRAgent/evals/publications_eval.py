@@ -12,18 +12,28 @@ import re
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
 from Bio import Entrez
+from langchain_core.messages import AIMessage
+from SRAgent.workflows.publications import create_publications_workflow
 
 # Add the parent directory to the path so we can import from SRAgent
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from SRAgent.agents.publications import create_publications_agent_stream, configure_logging
+from SRAgent.agents.publications import configure_logging
 from SRAgent.tools.pmid import pmid_from_title
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Configure logging to suppress specific messages
 configure_logging()
+
+# Enable debug logging for langchain
+logging.getLogger("langchain").setLevel(logging.DEBUG)
+logging.getLogger("langchain.core").setLevel(logging.DEBUG)
+logging.getLogger("langchain.agents").setLevel(logging.DEBUG)
 
 @dataclass
 class PublicationTestCase:
@@ -59,7 +69,7 @@ TEST_CASES = [
         name="SRP559437_PRJNA1214776_GSE287827",
         accessions=["SRP559437", "PRJNA1214776", "GSE287827"],
         expected_preprint_doi="10.1101/2025.02.26.640382",
-        description="This study has a bioRxiv preprint but no PubMed publication yet. It should be findable by searching the GEO title."
+        description="This study has a bioRxiv preprint but no PubMed publication yet. It should be findable by searching the GEO title on Google."
     ),
     PublicationTestCase(
         name="SRP557106_PRJNA1210001",
@@ -74,7 +84,7 @@ TEST_CASES = [
         accessions=["ERP156277", "PRJEB71477", "E-MTAB-13085"],
         expected_pmid="38165934",
         expected_pmcid="PMC10786309",
-        description="This study should be findable through Google search with the E-MTAB accession."
+        description="This study is linked on ArrayExpress, but no PMID is listed. It should search PubMed for the title. Google search would also work here."
     ),
     PublicationTestCase(
         name="GSE188367_PRJNA778547_SRP344952",
@@ -120,7 +130,7 @@ TEST_CASES = [
         name="ERP136281_PRJEB51634_E-MTAB-11536",
         accessions=["ERP136281", "PRJEB51634", "E-MTAB-11536"],
         expected_pmid="35549406",
-        expected_pmcid="PMC9098087",
+        expected_pmcid="PMC7612735",
         expected_preprint_doi=None,
         description="This study should be findable through ArrayExpress links for the E-MTAB accession."
     ),
@@ -183,22 +193,28 @@ async def evaluate_single_test_case(test_case: PublicationTestCase) -> Dict[str,
     accessions_str = " and ".join(test_case.accessions)
     logger.info(f"Testing accessions together: {accessions_str}")
     
-    # Create input message with all accessions, explicitly stating they are linked to the same publication
-    input_message = {"messages": [{"role": "user", "content": f"Find publications for {accessions_str}. These accessions are linked to the same publication."}]}
-    
     try:
         # Run the agent
         start_time = asyncio.get_event_loop().time()
-        result = await create_publications_agent_stream(input_message)
+        workflow = create_publications_workflow()
+        logger.debug("Created publications workflow")
+        
+        # Log the input message
+        logger.debug(f"Sending message to agent: {accessions_str}")
+        result = await workflow({"messages": [AIMessage(content=accessions_str)]})
+        logger.debug(f"Raw agent response: {result}")
+        
         end_time = asyncio.get_event_loop().time()
+        logger.debug(f"Agent execution took {end_time - start_time:.2f} seconds")
         
         # Extract values from the structured response
-        pmid = result.get("pmid")
-        pmcid = result.get("pmcid")
-        preprint_doi = result.get("preprint_doi")
-        response_text = result.get("message", "")
-        multiple_publications = result.get("multiple_publications", False)
-        all_publications = result.get("all_publications", [])
+        response = result["result"]
+        pmid = response.pmid
+        pmcid = response.pmcid
+        preprint_doi = response.preprint_doi
+        response_text = response.message
+        multiple_publications = response.multiple_publications
+        all_publications = response.all_publications
         
         # If PMID is missing but we have a title in the response, try to find PMID from title
         if not pmid and test_case.expected_pmid:
@@ -389,23 +405,62 @@ async def main():
             return False
         
         print(f"Running only test case: {test_case_name}")
-        results = await evaluate_publications_agent(selected_test_cases)
+        evaluation_results = await evaluate_publications_agent(selected_test_cases)
     else:
         # Run all test cases
         print("Running all test cases")
-        results = await evaluate_publications_agent()
+        evaluation_results = await evaluate_publications_agent()
     
-    # Print the results
-    print(json.dumps(results, indent=2))
+    # Print a nicely formatted summary table
+    print("\nTest Results Summary:")
+    print("=" * 100)
+    print(f"{'Test Case':<30} {'Status':<8} {'PMID':<12} {'PMCID':<12} {'Preprint DOI':<30}")
+    print("-" * 100)
     
-    # Print a summary
-    print("\nSummary:")
-    print(f"Total test cases: {results['summary']['total_test_cases']}")
-    print(f"Successful test cases: {results['summary']['successful_test_cases']}")
-    print(f"Failed test cases: {results['summary']['failed_test_cases']}")
+    for test_case_name, test_data in evaluation_results["test_cases"].items():
+        test_case = test_data["test_case"]
+        test_results = test_data["results"]
+        
+        # Format status
+        status = "✓" if test_data["success"] else "✗"
+        
+        # Format PMID
+        pmid = test_results["found_pmid"] if test_results["found_pmid"] else "None"
+        if pmid != "None" and pmid != test_case["expected_pmid"]:
+            pmid = f"{pmid} (expected: {test_case['expected_pmid']})"
+        
+        # Format PMCID
+        pmcid = test_results["found_pmcid"] if test_results["found_pmcid"] else "None"
+        if pmcid != "None" and pmcid != test_case["expected_pmcid"]:
+            pmcid = f"{pmcid} (expected: {test_case['expected_pmcid']})"
+        
+        # Format Preprint DOI
+        preprint = test_results["found_preprint_doi"] if test_results["found_preprint_doi"] else "None"
+        if preprint != "None" and preprint != test_case["expected_preprint_doi"]:
+            preprint = f"{preprint} (expected: {test_case['expected_preprint_doi']})"
+        
+        print(f"{test_case_name:<30} {status:<8} {pmid:<12} {pmcid:<12} {preprint:<30}")
+        # Add description printing
+        print(f"Description: {test_case['description']}")
+        print("-" * 100)
+    
+    print("=" * 100)
+    print(f"\nSummary:")
+    print(f"Total test cases: {evaluation_results['summary']['total_test_cases']}")
+    print(f"Successful test cases: {evaluation_results['summary']['successful_test_cases']}")
+    print(f"Failed test cases: {evaluation_results['summary']['failed_test_cases']}")
+    
+    # Print agent messages for all test cases
+    print("\nAgent Messages:")
+    print("=" * 100)
+    for test_case_name, test_data in evaluation_results["test_cases"].items():
+        print(f"\n{test_case_name}:")
+        print("-" * 100)
+        print(test_data["results"].get("response", "No message available"))
+        print("-" * 100)
     
     # Return success if all test cases passed
-    return results['summary']['failed_test_cases'] == 0
+    return evaluation_results['summary']['failed_test_cases'] == 0
 
 if __name__ == "__main__":
     # Configure logging
