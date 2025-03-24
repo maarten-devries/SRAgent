@@ -57,7 +57,7 @@ class EntrezInfo(BaseModel):
     database: str
 
 def create_get_entrez_ids_node() -> Callable:
-    model = set_model(model_name="o3-mini", reasoning_effort="low")
+    model = set_model(model_name="gpt-4o", reasoning_effort="low")
     async def invoke_get_entrez_ids_node(state: GraphState, config: RunnableConfig) -> Dict[str, Any]:
         """
         Structured data extraction of Entrez IDs from message

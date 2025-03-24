@@ -44,7 +44,7 @@ class TestSetModel:
         """Test set_model with default settings"""
         # Mock settings
         mock_settings = {
-            "models": {"default": "o3-mini"},
+            "models": {"default": "gpt-4o"},
             "temperature": {"default": 0.1},
             "reasoning_effort": {"default": "low"}
         }
@@ -54,7 +54,7 @@ class TestSetModel:
         with patch("SRAgent.agents.utils.ChatOpenAI") as mock_chat:
             model = set_model()
             mock_chat.assert_called_once_with(
-                model_name="o3-mini", 
+                model_name="gpt-4o", 
                 temperature=None, 
                 reasoning_effort="low"
             )
@@ -84,7 +84,7 @@ class TestSetModel:
         """Test set_model with parameter overrides"""
         # Mock settings
         mock_settings = {
-            "models": {"default": "o3-mini"},
+            "models": {"default": "gpt-4o"},
             "temperature": {"default": 0.1},
             "reasoning_effort": {"default": "low"}
         }
@@ -108,7 +108,7 @@ class TestSetModel:
         """Test set_model with specific agent settings"""
         # Mock settings with agent-specific settings
         mock_settings = {
-            "models": {"default": "o3-mini", "entrez": "o3-large"},
+            "models": {"default": "gpt-4o", "entrez": "o3-large"},
             "temperature": {"default": 0.1, "entrez": 0.2},
             "reasoning_effort": {"default": "low", "entrez": "medium"}
         }
